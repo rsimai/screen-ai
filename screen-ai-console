@@ -1,0 +1,111 @@
+#!/usr/bin/env python3
+import sys
+import ollama
+from pathlib import Path
+import argparse
+from config_loader import load_config
+
+def main():
+    # 0. Setup Argument Parser
+    parser = argparse.ArgumentParser(description='Analyze an image with an Ollama vision model interactively.')
+    parser.add_argument('--image', '-i', required=True, help='Path to the image file to analyze')
+    parser.add_argument('--config', '-c', help='Path to config file (default: ~/.screen-ai.conf)')
+    args = parser.parse_args()
+    IMAGE_PATH = args.image
+    
+    # Load configuration
+    try:
+        OLLAMA_SERVER_URL, MODEL_NAME, INITIAL_PROMPT = load_config(args.config)
+    except FileNotFoundError as e:
+        print(f"❌ Error: {e}")
+        return
+
+    # 1. Setup the Client
+    print(f"📡 Connecting to Ollama at {OLLAMA_SERVER_URL}...")
+    try:
+        client = ollama.Client(host=OLLAMA_SERVER_URL)
+        client.list() # Simple ping to check connection
+    except Exception as e:
+        print(f"❌ Error: Could not connect to server. Is it running? \nDetail: {e}")
+        return
+
+    # 2. Load Image as Bytes
+    img_path = Path(IMAGE_PATH)
+    if not img_path.exists():
+        print(f"❌ Error: Image file not found at {img_path}")
+        return
+    
+    with open(img_path, "rb") as f:
+        image_bytes = f.read()
+    
+    print(f"🖼️  Analyzing image ({len(image_bytes)/1024:.1f} KB) with {MODEL_NAME}...")
+
+    # 3. Prepare Initial Message
+    # The image is only sent ONCE with the first message.
+    messages = [{
+        'role': 'user',
+        'content': INITIAL_PROMPT,
+        'images': [image_bytes] 
+    }]
+    
+    print(f"🔍 DEBUG: Message structure:")
+    print(f"   - Role: user")
+    print(f"   - Content length: {len(INITIAL_PROMPT)} chars")
+    print(f"   - Images: 1 image, {len(image_bytes)} bytes")
+    print(f"   - Content preview: {INITIAL_PROMPT[:100]}...")
+
+    # 4. Send Initial Request and Start Interactive Loop
+    try:
+        # --- Initial Response ---
+        stream = client.chat(model=MODEL_NAME, messages=messages, stream=True)
+        
+        print("\n--- RESPONSE ---\n")
+        full_response = ""
+        for chunk in stream:
+            content = chunk['message']['content']
+            full_response += content
+            print(content, end='', flush=True)
+        print("\n\n----------------")
+
+        # Add model's response to history
+        messages.append({'role': 'assistant', 'content': full_response})
+
+        # --- Interactive Chat Loop ---
+        while True:
+            user_input = input("\nAsk a follow-up question (or type 'exit' to quit): ")
+            if user_input.lower() in ['exit', 'quit']:
+                print("👋 Exiting chat.")
+                break
+            
+            # Re-attach image to new user message for context
+            new_message = {'role': 'user', 'content': user_input, 'images': [image_bytes]}
+            messages.append(new_message)
+            
+            # Remove image from previous messages to avoid sending multiple times
+            if len(messages) > 3 and 'images' in messages[0]:
+                del messages[0]['images']
+            
+            print(f"🔍 DEBUG: Follow-up message count: {len(messages)}")
+            print(f"   - Last message: {user_input[:50]}...")
+
+            stream = client.chat(model=MODEL_NAME, messages=messages, stream=True)
+
+            print("\n--- RESPONSE ---\n")
+            full_response = ""
+            for chunk in stream:
+                content = chunk['message']['content']
+                full_response += content
+                print(content, end='', flush=True)
+            print("\n\n----------------")
+            
+            messages.append({'role': 'assistant', 'content': full_response})
+
+    except ollama.ResponseError as e:
+        print(f"\n❌ Model Error: {e.error}")
+        if 'not found' in str(e.error):
+            print(f"💡 Hint: You need to run 'ollama pull {MODEL_NAME}' on the server first.")
+    except Exception as e:
+        print(f"\n❌ Unexpected Error: {e}")
+
+if __name__ == "__main__":
+    main()

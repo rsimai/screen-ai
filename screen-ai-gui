@@ -1,0 +1,351 @@
+#!/usr/bin/env python3
+import sys
+import ollama
+from pathlib import Path
+import argparse
+from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
+                               QHBoxLayout, QTextEdit, QLineEdit, QPushButton, 
+                               QLabel, QSplitter, QMessageBox)
+from PySide6.QtGui import QPixmap, QKeyEvent
+from PySide6.QtCore import Qt, QThread, Signal, QObject
+from config_loader import load_config
+
+# Global debug flag
+DEBUG = False
+
+def debug_print(*args, **kwargs):
+    if DEBUG:
+        print(*args, **kwargs)
+
+class HistoryLineEdit(QLineEdit):
+    """ A QLineEdit that stores a history of commands, accessible with arrow keys. """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.history = []
+        self.history_index = 0
+        self.temp_user_input = ""
+
+    def add_to_history(self, command):
+        if command and (not self.history or self.history[-1] != command):
+            self.history.append(command)
+        self.history_index = len(self.history)
+        self.temp_user_input = ""
+
+    def keyPressEvent(self, event: QKeyEvent):
+        if event.key() == Qt.Key_Up:
+            if self.history_index == len(self.history):
+                self.temp_user_input = self.text() # Save current user text
+            if self.history_index > 0:
+                self.history_index -= 1
+                self.setText(self.history[self.history_index])
+                self.setCursorPosition(len(self.text()))
+        elif event.key() == Qt.Key_Down:
+            if self.history_index < len(self.history) - 1:
+                self.history_index += 1
+                self.setText(self.history[self.history_index])
+                self.setCursorPosition(len(self.text()))
+            elif self.history_index == len(self.history) - 1:
+                self.history_index += 1
+                self.setText(self.temp_user_input) # Restore user text
+                self.setCursorPosition(len(self.text()))
+        else:
+            super().keyPressEvent(event)
+
+class OllamaWorker(QObject):
+    """ Worker thread for handling Ollama API calls """
+    new_token = Signal(str)
+    finished = Signal(str)
+    error = Signal(str)
+
+    def __init__(self, client, model_name, messages):
+        super().__init__()
+        self.client = client
+        self.model_name = model_name
+        self.messages = messages
+        self._is_running = True
+
+    def run(self):
+        try:
+            # Debug: Print message structure without image data
+            debug_messages = []
+            for msg in self.messages:
+                debug_msg = {'role': msg['role'], 'content': msg['content']}
+                if 'images' in msg:
+                    debug_msg['images'] = f"[{len(msg['images'])} images, {len(msg['images'][0])} bytes]"
+                debug_messages.append(debug_msg)
+            debug_print(f"DEBUG: Sending messages: {debug_messages}")
+            
+            stream = self.client.chat(model=self.model_name, messages=self.messages, stream=True)
+            full_response = ""
+            for chunk in stream:
+                if not self._is_running:
+                    break
+                token = chunk['message']['content']
+                full_response += token
+                self.new_token.emit(token)
+            self.finished.emit(full_response)
+        except ollama.ResponseError as e:
+            if self._is_running: self.error.emit(f"Model Error: {e.error}")
+        except Exception as e:
+            if self._is_running: self.error.emit(f"An unexpected error occurred: {e}")
+
+    def stop(self):
+        self._is_running = False
+
+
+class MainWindow(QMainWindow):
+    def __init__(self, image_path, ollama_url, model_name, initial_prompt):
+        super().__init__()
+        self.ollama_url = ollama_url
+        self.model_name = model_name
+        self.initial_prompt = initial_prompt
+        debug_print("DEBUG: MainWindow.__init__ started")
+        self.setWindowTitle("Screen AI")
+        self.setGeometry(100, 100, 1200, 700)
+        self.image_path = image_path
+        self.image_bytes = None
+        self.messages = []
+        self.worker = None
+        self.thread = None
+        self.was_stopped = False
+
+        # --- UI Setup ---
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        main_layout = QHBoxLayout(central_widget)
+        splitter = QSplitter(Qt.Horizontal)
+        main_layout.addWidget(splitter)
+
+        self.image_label = QLabel("Loading image...")
+        self.image_label.setAlignment(Qt.AlignCenter)
+        self.image_label.setMinimumWidth(400)
+        
+        chat_widget = QWidget()
+        chat_layout = QVBoxLayout(chat_widget)
+        self.chat_display = QTextEdit()
+        self.chat_display.setReadOnly(True)
+        self.chat_input = HistoryLineEdit() # Use the new history-aware line edit
+        self.chat_input.setPlaceholderText("Ask a follow-up question...")
+        self.send_button = QPushButton("Send")
+
+        input_layout = QHBoxLayout()
+        input_layout.addWidget(self.chat_input)
+        input_layout.addWidget(self.send_button)
+        chat_layout.addWidget(self.chat_display)
+        chat_layout.addLayout(input_layout)
+
+        splitter.addWidget(self.image_label)
+        splitter.addWidget(chat_widget)
+        splitter.setSizes([600, 600])
+
+        # --- Connections ---
+        self.chat_input.returnPressed.connect(self.send_chat_message)
+        # self.send_button's connection is managed by set_ui_for_thinking
+
+        # --- Load Image & Init ---
+        self.load_and_display_image()
+        self.init_ollama()
+        self.set_ui_for_thinking(False) # Set initial button state
+        self.start_initial_analysis()
+        debug_print("DEBUG: MainWindow.__init__ finished")
+
+    def load_and_display_image(self):
+        debug_print("DEBUG: load_and_display_image started")
+        pixmap = QPixmap(self.image_path)
+        if pixmap.isNull():
+            debug_print("DEBUG: pixmap.isNull() is True")
+            self.image_label.setText(f"Error: Image not found at {self.image_path}")
+            self.send_button.setEnabled(False)
+            self.chat_input.setEnabled(False)
+            return False
+        debug_print("DEBUG: pixmap loaded successfully")
+        self.original_pixmap = pixmap
+        self.rescale_image()
+        return True
+
+    def init_ollama(self):
+        debug_print("DEBUG: init_ollama started")
+        self.append_to_chat("ℹ️", "Connecting to Ollama server...")
+        try:
+            self.client = ollama.Client(host=self.ollama_url)
+            self.client.list()
+            self.append_to_chat("✅", "Connection successful.")
+            debug_print("DEBUG: init_ollama successful")
+        except Exception as e:
+            debug_print(f"DEBUG: init_ollama failed: {e}")
+            self.show_error(f"Could not connect to Ollama server at {self.ollama_url}.\nPlease ensure it's running.\n\nError: {e}")
+
+    def start_initial_analysis(self):
+        debug_print("DEBUG: start_initial_analysis started")
+        if not hasattr(self, 'client') or not hasattr(self, 'original_pixmap'):
+            debug_print(f"DEBUG: start_initial_analysis bailing out. client: {hasattr(self, 'client')}, pixmap: {hasattr(self, 'original_pixmap')}")
+            return
+
+        try:
+            with open(self.image_path, "rb") as f:
+                self.image_bytes = f.read()
+            debug_print(f"DEBUG: Read {len(self.image_bytes)} bytes from {self.image_path}")
+        except Exception as e:
+            self.show_error(f"Failed to read image file {self.image_path}: {e}")
+            return
+
+        # Create fresh message list to avoid any caching issues
+        self.messages = [{
+            'role': 'user',
+            'content': self.initial_prompt,
+            'images': [self.image_bytes] 
+        }]
+        debug_print(f"DEBUG: Created fresh message with image ({len(self.image_bytes)} bytes)")
+        debug_print(f"DEBUG: Message content preview: {self.initial_prompt[:100]}...")
+        
+        self.append_to_chat("👤", "Initial analysis request sent...")
+        self.run_ollama_worker()
+
+    def send_chat_message(self):
+        user_input = self.chat_input.text().strip()
+        if not user_input:
+            return
+        
+        self.chat_input.add_to_history(user_input) # Add to history
+        self.chat_input.clear()
+        self.append_to_chat("👤", user_input)
+
+        new_message = {'role': 'user', 'content': user_input}
+        # To ensure the model has visual context for follow-up questions,
+        # we re-attach the image to each new user prompt. The Ollama API
+        # is stateless, and the model relies on the `messages` list for context.
+        if self.image_bytes:
+            new_message['images'] = [self.image_bytes]
+
+        self.messages.append(new_message)
+
+        # To avoid sending the image data multiple times in the same payload,
+        # we remove it from the original message after the first interaction.
+        # The context is now carried by the most recent user message.
+        if len(self.messages) > 2 and 'images' in self.messages[0]:
+            del self.messages[0]['images']
+            
+        self.run_ollama_worker()
+
+    def stop_processing(self):
+        if self.worker and self.thread and self.thread.isRunning():
+            self.was_stopped = True
+            self.worker.stop()
+            self.thread.quit()
+            self.append_to_chat("🛑", "Processing stopped by user.")
+            self.set_ui_for_thinking(False)
+
+    def run_ollama_worker(self):
+        debug_print("DEBUG: run_ollama_worker started")
+        if self.messages and 'images' in self.messages[0]:
+            debug_print(f"DEBUG: Sending message with image ({len(self.messages[0]['images'][0])} bytes)")
+        else:
+            debug_print("DEBUG: Sending message without image")
+
+        # Create fresh client to avoid any caching issues
+        fresh_client = ollama.Client(host=self.ollama_url)
+        debug_print("DEBUG: Created fresh Ollama client")
+
+        self.was_stopped = False
+        self.set_ui_for_thinking(True)
+        self.append_to_chat("🤖", "") # Placeholder for model response
+
+        self.thread = QThread()
+        self.worker = OllamaWorker(fresh_client, self.model_name, self.messages)
+        self.worker.moveToThread(self.thread)
+
+        self.worker.new_token.connect(self.append_token)
+        self.worker.finished.connect(self.finish_thinking)
+        self.worker.error.connect(self.show_error)
+        
+        self.thread.started.connect(self.worker.run)
+        self.thread.finished.connect(self.thread.deleteLater)
+        self.thread.start()
+
+    def set_ui_for_thinking(self, is_thinking):
+        self.chat_input.setEnabled(not is_thinking)
+        
+        try:
+            self.send_button.clicked.disconnect()
+        except (RuntimeError, TypeError):
+            pass # No connection to disconnect
+
+        if is_thinking:
+            self.send_button.setText("Stop")
+            self.send_button.clicked.connect(self.stop_processing)
+        else:
+            self.send_button.setText("Send")
+            self.send_button.clicked.connect(self.send_chat_message)
+            self.chat_input.setFocus()
+        self.send_button.setEnabled(True)
+
+
+    def append_token(self, token):
+        current_text = self.chat_display.toPlainText()
+        # Remove the placeholder if it's the first token
+        if current_text.endswith("<b>🤖:</b> "):
+            current_text = current_text[:-1] # Keep bold tag
+            self.chat_display.setHtml(current_text)
+
+        self.chat_display.insertPlainText(token)
+        self.chat_display.verticalScrollBar().setValue(self.chat_display.verticalScrollBar().maximum())
+
+    def finish_thinking(self, full_response):
+        if not self.was_stopped:
+            self.messages.append({'role': 'assistant', 'content': full_response})
+        
+        self.set_ui_for_thinking(False)
+        if self.thread and self.thread.isRunning():
+            self.thread.quit()
+
+    def append_to_chat(self, role, text):
+        self.chat_display.append(f"<b>{role}:</b> {text}")
+
+    def show_error(self, error_message):
+        self.append_to_chat("❌ ERROR", error_message)
+        self.set_ui_for_thinking(False)
+        if self.thread and self.thread.isRunning():
+            self.thread.quit()
+        QMessageBox.critical(self, "Error", error_message)
+
+    def rescale_image(self):
+        if hasattr(self, 'original_pixmap'):
+            scaled_pixmap = self.original_pixmap.scaled(self.image_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            self.image_label.setPixmap(scaled_pixmap)
+
+    def resizeEvent(self, event):
+        self.rescale_image()
+        super().resizeEvent(event)
+        
+    def closeEvent(self, event):
+        self.stop_processing()
+        event.accept()
+
+def main():
+    global DEBUG
+    parser = argparse.ArgumentParser(description='Screen AI GUI - Analyze images with Ollama vision model')
+    parser.add_argument('--image', '-i', required=True, help='Path to the image file to analyze')
+    parser.add_argument('--config', '-c', help='Path to config file (default: ~/.screen-ai.conf)')
+    parser.add_argument('--debug', '-d', action='store_true', help='Enable debug output')
+    args = parser.parse_args()
+    
+    DEBUG = args.debug
+    
+    app = QApplication(sys.argv)
+    
+    if not Path(args.image).exists():
+        QMessageBox.critical(None, "Error", f"Image file not found: {args.image}")
+        sys.exit(1)
+    
+    try:
+        ollama_url, model_name, initial_prompt = load_config(args.config)
+    except FileNotFoundError as e:
+        QMessageBox.critical(None, "Error", f"Config error: {e}")
+        sys.exit(1)
+
+    window = MainWindow(args.image, ollama_url, model_name, initial_prompt)
+    window.show()
+    sys.exit(app.exec())
+
+if __name__ == "__main__":
+    main()
