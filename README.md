@@ -1,9 +1,10 @@
 # Screen AI
 
-Screen AI is a tool that analyzes images using Ollama's vision models to extract text (OCR) e.g. to identify potential errors or anomalies.
+Screen AI is a tool that analyzes images or screenshots using Ollama's vision models to extract text (OCR), to identify potential errors or anomalies, or answer questions.
 
 ## Features
 
+- **Take Screenshot**: gui starts screenshot utility
 - **OCR Analysis**: Extracts text from images while preserving formatting
 - **Error Detection**: Reviews extracted text for mistakes and anomalies  
 - **Interactive Chat**: Ask follow-up questions about the analyzed image
