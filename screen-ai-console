@@ -15,7 +15,7 @@ def main():
     
     # Load configuration
     try:
-        OLLAMA_SERVER_URL, MODEL_NAME, INITIAL_PROMPT = load_config(args.config)
+        OLLAMA_SERVER_URL, MODEL_NAME, INITIAL_PROMPT, _ = load_config(args.config)
     except FileNotFoundError as e:
         print(f"❌ Error: {e}")
         return

@@ -3,6 +3,10 @@ import sys
 import ollama
 from pathlib import Path
 import argparse
+import subprocess
+import tempfile
+import uuid
+import os
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                                QHBoxLayout, QTextEdit, QLineEdit, QPushButton, 
                                QLabel, QSplitter, QMessageBox)
@@ -321,10 +325,37 @@ class MainWindow(QMainWindow):
         self.stop_processing()
         event.accept()
 
+def take_screenshot(screenshot_cmd):
+    """Take a screenshot using the configured command"""
+    # Generate unique filename
+    filename = f"screen-ai-{uuid.uuid4().hex[:8]}.png"
+    
+    # Replace $FILENAME in command
+    cmd = screenshot_cmd.replace('$FILENAME', filename)
+    
+    debug_print(f"DEBUG: Taking screenshot with command: {cmd}")
+    
+    try:
+        # Execute screenshot command
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise Exception(f"Screenshot command failed: {result.stderr}")
+        
+        # Return the full path to the screenshot
+        screenshot_path = f"/tmp/{filename}"
+        if not Path(screenshot_path).exists():
+            raise Exception(f"Screenshot file not created: {screenshot_path}")
+        
+        debug_print(f"DEBUG: Screenshot saved to: {screenshot_path}")
+        return screenshot_path
+        
+    except Exception as e:
+        raise Exception(f"Failed to take screenshot: {e}")
+
 def main():
     global DEBUG
     parser = argparse.ArgumentParser(description='Screen AI GUI - Analyze images with Ollama vision model')
-    parser.add_argument('--image', '-i', required=True, help='Path to the image file to analyze')
+    parser.add_argument('--image', '-i', help='Path to the image file to analyze (if not provided, takes screenshot)')
     parser.add_argument('--config', '-c', help='Path to config file (default: ~/.screen-ai.conf)')
     parser.add_argument('--debug', '-d', action='store_true', help='Enable debug output')
     args = parser.parse_args()
@@ -333,17 +364,26 @@ def main():
     
     app = QApplication(sys.argv)
     
-    if not Path(args.image).exists():
-        QMessageBox.critical(None, "Error", f"Image file not found: {args.image}")
-        sys.exit(1)
-    
     try:
-        ollama_url, model_name, initial_prompt = load_config(args.config)
+        ollama_url, model_name, initial_prompt, screenshot_cmd = load_config(args.config)
     except FileNotFoundError as e:
         QMessageBox.critical(None, "Error", f"Config error: {e}")
         sys.exit(1)
+    
+    # Determine image path
+    if args.image:
+        if not Path(args.image).exists():
+            QMessageBox.critical(None, "Error", f"Image file not found: {args.image}")
+            sys.exit(1)
+        image_path = args.image
+    else:
+        try:
+            image_path = take_screenshot(screenshot_cmd)
+        except Exception as e:
+            QMessageBox.critical(None, "Error", f"Screenshot failed: {e}")
+            sys.exit(1)
 
-    window = MainWindow(args.image, ollama_url, model_name, initial_prompt)
+    window = MainWindow(image_path, ollama_url, model_name, initial_prompt)
     window.show()
     sys.exit(app.exec())
 

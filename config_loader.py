@@ -17,4 +17,5 @@ def load_config(config_path=None):
     with open(config_path, 'r') as f:
         exec(f.read(), config_vars)
     
-    return config_vars['OLLAMA_SERVER_URL'], config_vars['MODEL_NAME'], config_vars['INITIAL_PROMPT']
+    screenshot_cmd = config_vars.get('SCREENSHOT_COMMAND', 'spectacle -b -r -n -o /tmp/$FILENAME')
+    return config_vars['OLLAMA_SERVER_URL'], config_vars['MODEL_NAME'], config_vars['INITIAL_PROMPT'], screenshot_cmd
