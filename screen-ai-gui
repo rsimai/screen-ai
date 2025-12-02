@@ -247,12 +247,16 @@ class MainWindow(QMainWindow):
         self.run_ollama_worker()
 
     def stop_processing(self):
-        if self.worker and self.thread and self.thread.isRunning():
-            self.was_stopped = True
-            self.worker.stop()
-            self.thread.quit()
-            self.append_to_chat("🛑", "Processing stopped by user.")
-            self.set_ui_for_thinking(False)
+        try:
+            if self.worker and self.thread and hasattr(self.thread, 'isRunning') and self.thread.isRunning():
+                self.was_stopped = True
+                self.worker.stop()
+                self.thread.quit()
+                self.append_to_chat("🛑", "Processing stopped by user.")
+                self.set_ui_for_thinking(False)
+        except (RuntimeError, AttributeError):
+            # Thread already deleted or not available
+            pass
 
     def run_ollama_worker(self):
         debug_print("DEBUG: run_ollama_worker started")
@@ -284,10 +288,8 @@ class MainWindow(QMainWindow):
     def set_ui_for_thinking(self, is_thinking):
         self.chat_input.setEnabled(not is_thinking)
         
-        try:
-            self.send_button.clicked.disconnect()
-        except (RuntimeError, TypeError):
-            pass # No connection to disconnect
+        # Safely disconnect all signals
+        self.send_button.clicked.disconnect()
 
         if is_thinking:
             self.send_button.setText("Stop")
@@ -337,7 +339,11 @@ class MainWindow(QMainWindow):
         super().resizeEvent(event)
         
     def closeEvent(self, event):
-        self.stop_processing()
+        try:
+            self.stop_processing()
+        except (RuntimeError, AttributeError):
+            # Ignore Qt object deletion errors during shutdown
+            pass
         
         # Auto-remove file if checkbox is checked
         if self.auto_remove_checkbox.isChecked():
@@ -377,6 +383,16 @@ def take_screenshot(screenshot_cmd):
     except Exception as e:
         raise Exception(f"Failed to take screenshot: {e}")
 
+def cleanup_file(image_path, should_remove):
+    """Clean up the image file if needed"""
+    if should_remove:
+        try:
+            if Path(image_path).exists():
+                os.remove(image_path)
+                debug_print(f"DEBUG: Cleaned up file: {image_path}")
+        except Exception as e:
+            debug_print(f"DEBUG: Failed to clean up file: {e}")
+
 def main():
     global DEBUG
     parser = argparse.ArgumentParser(description='Screen AI GUI - Analyze images with Ollama vision model')
@@ -410,7 +426,14 @@ def main():
 
     window = MainWindow(image_path, ollama_url, model_name, initial_prompt, is_screenshot=not args.image)
     window.show()
-    sys.exit(app.exec())
+    
+    try:
+        exit_code = app.exec()
+    finally:
+        # Ensure cleanup happens even if app doesn't close normally
+        cleanup_file(image_path, window.auto_remove_checkbox.isChecked())
+    
+    sys.exit(exit_code)
 
 if __name__ == "__main__":
     main()
