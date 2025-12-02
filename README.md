@@ -34,24 +34,13 @@ Graphical interface with split-pane view showing the image and chat side-by-side
 
 ## Configuration
 
-Create `~/.screen-ai.conf` with your settings:
+copy `screen-ai.conf` to your `~/.screen-ai.conf`. It has the variables (with examples):
 
 ```python
 OLLAMA_SERVER_URL = 'http://your_ollama_host:11434'
-MODEL_NAME = 'granite3.2-vision'
-INITIAL_PROMPT = """You are a QA and debug assistant. Your task is to analyze the provided image.
-
-**Step 1: OCR**
-First, extract all text from the image, preserving the original formatting as much as possible.
-
-**Step 2: Analysis**
-Review the extracted text for any mistakes, errors, or anomalies.
-
-**Step 3: Reporting**
-- If you find any errors, describe them clearly.
-- If you find no errors, simply respond with exactly one sentence summary.
-
-Do not include any other commentary or introductory phrases."""
+MODEL_NAME = 'granite3.2-vision' 
+SCREENSHOT_COMMAND = 'spectacle -b -r -n -o /tmp/$FILENAME'
+INITIAL_PROMPT = """Your prompt here."""
 ```
 
 ## Usage
@@ -75,13 +64,16 @@ Do not include any other commentary or introductory phrases."""
 
 # With custom config and debug
 ./screen-ai-gui -i image.jpg -c /path/to/config --debug
+
+# Take a screenshot and process
+./screen-ai-gui
 ```
 
 ## Command Line Options
 
 Both applications support:
 
-- `--image, -i`: Path to image file (required)
+- `--image, -i`: Path to image file (required for console
 - `--config, -c`: Path to config file (default: `~/.screen-ai.conf`)
 - `--debug, -d`: Enable debug output (GUI only)
 - `--help, -h`: Show help message
