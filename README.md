@@ -25,9 +25,10 @@ Graphical interface with split-pane view showing the image and chat side-by-side
    pip install -r requirements.txt
    ```
 
-2. Ensure Ollama server is running on your LLM host with `llama3.2-vision` model:
+2. Ensure Ollama server is running on your LLM host with a `vision` model that can work with images:
    ```bash
    ollama pull llama3.2-vision
+   ollama pull granite3.2-vision
    ollama serve
    ```
 
@@ -37,7 +38,7 @@ Create `~/.screen-ai.conf` with your settings:
 
 ```python
 OLLAMA_SERVER_URL = 'http://your_ollama_host:11434'
-MODEL_NAME = 'llama3.2-vision'
+MODEL_NAME = 'granite3.2-vision'
 INITIAL_PROMPT = """You are a QA and debug assistant. Your task is to analyze the provided image.
 
 **Step 1: OCR**
