@@ -9,7 +9,7 @@ import uuid
 import os
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                                QHBoxLayout, QTextEdit, QLineEdit, QPushButton, 
-                               QLabel, QSplitter, QMessageBox)
+                               QLabel, QSplitter, QMessageBox, QCheckBox)
 from PySide6.QtGui import QPixmap, QKeyEvent
 from PySide6.QtCore import Qt, QThread, Signal, QObject
 from config_loader import load_config
@@ -98,11 +98,12 @@ class OllamaWorker(QObject):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, image_path, ollama_url, model_name, initial_prompt):
+    def __init__(self, image_path, ollama_url, model_name, initial_prompt, is_screenshot=False):
         super().__init__()
         self.ollama_url = ollama_url
         self.model_name = model_name
         self.initial_prompt = initial_prompt
+        self.is_screenshot = is_screenshot
         debug_print("DEBUG: MainWindow.__init__ started")
         self.setWindowTitle("Screen AI")
         self.setGeometry(100, 100, 1200, 700)
@@ -120,9 +121,23 @@ class MainWindow(QMainWindow):
         splitter = QSplitter(Qt.Horizontal)
         main_layout.addWidget(splitter)
 
+        # Image panel with filename and checkbox
+        image_widget = QWidget()
+        image_layout = QVBoxLayout(image_widget)
+        
         self.image_label = QLabel("Loading image...")
         self.image_label.setAlignment(Qt.AlignCenter)
         self.image_label.setMinimumWidth(400)
+        
+        self.filename_label = QLabel(f"File: {self.image_path}")
+        self.filename_label.setAlignment(Qt.AlignCenter)
+        
+        self.auto_remove_checkbox = QCheckBox("Auto-remove file on exit")
+        self.auto_remove_checkbox.setChecked(self.is_screenshot)
+        
+        image_layout.addWidget(self.image_label)
+        image_layout.addWidget(self.filename_label)
+        image_layout.addWidget(self.auto_remove_checkbox)
         
         chat_widget = QWidget()
         chat_layout = QVBoxLayout(chat_widget)
@@ -138,7 +153,7 @@ class MainWindow(QMainWindow):
         chat_layout.addWidget(self.chat_display)
         chat_layout.addLayout(input_layout)
 
-        splitter.addWidget(self.image_label)
+        splitter.addWidget(image_widget)
         splitter.addWidget(chat_widget)
         splitter.setSizes([600, 600])
 
@@ -323,6 +338,16 @@ class MainWindow(QMainWindow):
         
     def closeEvent(self, event):
         self.stop_processing()
+        
+        # Auto-remove file if checkbox is checked
+        if self.auto_remove_checkbox.isChecked():
+            try:
+                if Path(self.image_path).exists():
+                    os.remove(self.image_path)
+                    debug_print(f"DEBUG: Removed file: {self.image_path}")
+            except Exception as e:
+                debug_print(f"DEBUG: Failed to remove file: {e}")
+        
         event.accept()
 
 def take_screenshot(screenshot_cmd):
@@ -383,7 +408,7 @@ def main():
             QMessageBox.critical(None, "Error", f"Screenshot failed: {e}")
             sys.exit(1)
 
-    window = MainWindow(image_path, ollama_url, model_name, initial_prompt)
+    window = MainWindow(image_path, ollama_url, model_name, initial_prompt, is_screenshot=not args.image)
     window.show()
     sys.exit(app.exec())
 
